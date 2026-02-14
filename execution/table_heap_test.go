@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"mit.edu/dsg/godb/catalog"
 	"mit.edu/dsg/godb/common"
-	"mit.edu/dsg/godb/logging"
 	"mit.edu/dsg/godb/storage"
 	"mit.edu/dsg/godb/transaction"
 )
@@ -21,7 +20,7 @@ import (
 func makeTestDeps(t *testing.T) (*storage.BufferPool, *TableHeap) {
 	testDir := t.TempDir()
 	sm := storage.NewDiskStorageManager(testDir)
-	bp := storage.NewBufferPool(10, sm)
+	bp := storage.NewBufferPool(10, sm, storage.NoopLogManager{})
 
 	lockManager := transaction.NewLockManager()
 
@@ -30,7 +29,7 @@ func makeTestDeps(t *testing.T) (*storage.BufferPool, *TableHeap) {
 		Name:    "test_table",
 		Columns: []catalog.Column{{Name: "id", Type: common.IntType}, {Name: "name", Type: common.StringType}},
 	}
-	th, err := NewTableHeap(table, bp, logging.NoopLogManager{}, lockManager)
+	th, err := NewTableHeap(table, bp, storage.NoopLogManager{}, lockManager)
 	require.NoError(t, err)
 	return bp, th
 }
@@ -194,14 +193,15 @@ func TestTableHeap_Persistence(t *testing.T) {
 	}
 
 	// Flush to disk
-	bp.FlushAllPages(common.LSN(1000))
+	err := bp.FlushAllPages()
+	require.NoError(t, err)
 
 	table := &catalog.Table{
 		Oid:     100, // Same OID
 		Name:    "test_table",
 		Columns: []catalog.Column{{Name: "id", Type: common.IntType}, {Name: "name", Type: common.StringType}},
 	}
-	th2, err := NewTableHeap(table, bp, logging.NoopLogManager{}, transaction.NewLockManager())
+	th2, err := NewTableHeap(table, bp, storage.NoopLogManager{}, transaction.NewLockManager())
 	require.NoError(t, err)
 
 	for i := 50; i < 60; i++ {

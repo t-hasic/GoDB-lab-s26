@@ -1,12 +1,9 @@
-package logging
+package storage
 
-import (
-	"mit.edu/dsg/godb/common"
-)
+import "math"
 
+type LSN int64
 type LogRecordType uint16
-
-const logBufferSize = 1 << 16
 
 const (
 	InvalidLogRecord LogRecordType = iota // So we can catch uninitialized values
@@ -63,18 +60,18 @@ type LogManager interface {
 	// Append writes a log record to the log buffer.
 	// It returns the LSN (Log Sequence Number) assigned to the record.
 	// Note: This does not guarantee the record is on disk yet; use WaitUntilFlushed for that.
-	Append(record LogRecord) (common.LSN, error)
+	Append(record LogRecord) (LSN, error)
 
 	// WaitUntilFlushed blocks until the log record with the given LSN (and all prior records)
 	// has been successfully written to stable storage (disk).
-	WaitUntilFlushed(lsn common.LSN) error
+	WaitUntilFlushed(lsn LSN) error
 
 	// Iterator returns a scanner to walk the log from a specific starting point.
 	// This is primarily used during the Recovery process (Analysis, Redo, Undo).
-	Iterator(startLSN common.LSN) (LogIterator, error)
+	Iterator(startLSN LSN) (LogIterator, error)
 
 	// FlushedUntil returns the highest LSN that is currently known to be on disk.
-	FlushedUntil() common.LSN
+	FlushedUntil() LSN
 
 	// Close cleans up file handles and ensures any pending buffers are flushed.
 	Close() error
@@ -90,11 +87,34 @@ type LogIterator interface {
 	CurrentRecord() LogRecord
 
 	// CurrentLSN returns the LSN of the current record.
-	CurrentLSN() common.LSN
+	CurrentLSN() LSN
 
 	// Error returns the first unexpected error that was encountered by the iterator.
 	Error() error
 
 	// Close releases resources associated with the iterator (e.g., file handles).
 	Close() error
+}
+
+// NoopLogManager is a no-op implementation of LogManager for testing before recovery is relevant.
+type NoopLogManager struct{}
+
+func (n NoopLogManager) Append(record LogRecord) (LSN, error) {
+	return 0, nil
+}
+
+func (n NoopLogManager) WaitUntilFlushed(lsn LSN) error {
+	return nil
+}
+
+func (n NoopLogManager) Iterator(startLSN LSN) (LogIterator, error) {
+	return nil, nil
+}
+
+func (n NoopLogManager) FlushedUntil() LSN {
+	return LSN(math.MaxInt64)
+}
+
+func (n NoopLogManager) Close() error {
+	return nil
 }

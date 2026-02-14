@@ -1,11 +1,10 @@
-package logging
+package storage
 
 import (
 	"encoding/binary"
 	"fmt"
 
 	"mit.edu/dsg/godb/common"
-	"mit.edu/dsg/godb/storage"
 )
 
 // LogRecord is the in-memory representation.
@@ -67,7 +66,7 @@ func (r LogRecord) RID() common.RecordID {
 
 // BeforeImage returns the tuple data representing the state before the operation if the log record type has this field.
 // This is used for Undo operations.
-func (r LogRecord) BeforeImage() storage.RawTuple {
+func (r LogRecord) BeforeImage() RawTuple {
 	t := r.RecordType()
 	common.Assert(t == LogUpdate, "log type %s does not support BeforeImage()", t)
 	size := (len(r.data) - offsetAfterImage) / 2
@@ -76,7 +75,7 @@ func (r LogRecord) BeforeImage() storage.RawTuple {
 
 // AfterImage returns the tuple data representing the state after the operation if the log record type has this field.
 // This is used for Redo operations.
-func (r LogRecord) AfterImage() storage.RawTuple {
+func (r LogRecord) AfterImage() RawTuple {
 	t := r.RecordType()
 	common.Assert(t == LogUpdate || t == LogUpdateCLR || t == LogInsert, "log type %s does not support AfterImage()", t)
 
@@ -169,12 +168,12 @@ func NewAbortRecord(buf []byte, txnID common.TransactionID) LogRecord {
 }
 
 // InsertRecordSize returns the size required for an Insert record given the row data.
-func InsertRecordSize(row storage.RawTuple) int {
+func InsertRecordSize(row RawTuple) int {
 	return logRecordHeaderSize + 8 + common.RecordIDSize + len(row)
 }
 
 // NewInsertRecord initializes a LogInsert record.
-func NewInsertRecord(buf []byte, txnID common.TransactionID, rid common.RecordID, row storage.RawTuple) LogRecord {
+func NewInsertRecord(buf []byte, txnID common.TransactionID, rid common.RecordID, row RawTuple) LogRecord {
 	size := InsertRecordSize(row)
 	r := LogRecord{data: buf[:size]}
 	binary.LittleEndian.PutUint16(r.data[offsetType:], uint16(LogInsert))
@@ -228,7 +227,7 @@ func NewDeleteCLR(buf []byte, deleteRecord LogRecord) LogRecord {
 }
 
 // UpdateRecordSize returns the size required for an Update record.
-func UpdateRecordSize(before, after storage.RawTuple) int {
+func UpdateRecordSize(before, after RawTuple) int {
 	common.Assert(len(before) == len(after), "before and after tuples must be the same size in the current implementation")
 	return logRecordHeaderSize + 8 + common.RecordIDSize + len(before) + len(after)
 }
@@ -236,7 +235,7 @@ func UpdateRecordSize(before, after storage.RawTuple) int {
 // NewUpdateRecord initializes a LogUpdate record.
 // It writes `tupleToUpdate` as the BeforeImage (for Undo).
 // The AfterImage slot is left empty and must be populated by the caller.
-func NewUpdateRecord(buf []byte, txnID common.TransactionID, rid common.RecordID, before, after storage.RawTuple) LogRecord {
+func NewUpdateRecord(buf []byte, txnID common.TransactionID, rid common.RecordID, before, after RawTuple) LogRecord {
 	size := UpdateRecordSize(before, after)
 	r := LogRecord{data: buf[:size]}
 	binary.LittleEndian.PutUint16(r.data[offsetType:], uint16(LogUpdate))

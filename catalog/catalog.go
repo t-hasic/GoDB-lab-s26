@@ -35,6 +35,8 @@ type Catalog struct {
 	// In-memory structures for fast lookups
 	tableMap  map[string]*Table   // TableName -> Table
 	columnMap map[string][]*Table // ColumnName -> List of Tables containing this column
+
+	persistenceProvider PersistenceProvider
 }
 
 // Column represents the basic unit of a table schema.
@@ -112,8 +114,9 @@ func NewCatalog(provider PersistenceProvider) (*Catalog, error) {
 			NextId: 0,
 			Tables: make([]*Table, 0),
 		},
-		tableMap:  make(map[string]*Table),
-		columnMap: make(map[string][]*Table),
+		tableMap:            make(map[string]*Table),
+		columnMap:           make(map[string][]*Table),
+		persistenceProvider: provider,
 	}
 
 	jsonData, err := provider.LoadCatalogState()
@@ -136,7 +139,7 @@ func NewCatalog(provider PersistenceProvider) (*Catalog, error) {
 // AddTable registers a new table in the catalog.
 // It assigns a globally unique ObjectID to the table and persists the updated state. If the table with that name
 // already exists, it returns DuplicateObjectError.
-func (c *Catalog) AddTable(tableName string, columns []Column, provider PersistenceProvider) (*Table, error) {
+func (c *Catalog) AddTable(tableName string, columns []Column) (*Table, error) {
 	if _, exists := c.tableMap[tableName]; exists {
 		return nil, common.GoDBError{
 			Code:      common.DuplicateObjectError,
@@ -164,7 +167,7 @@ func (c *Catalog) AddTable(tableName string, columns []Column, provider Persiste
 	if err != nil {
 		return nil, err
 	}
-	return t, provider.SaveCatalogState(jsonData)
+	return t, c.persistenceProvider.SaveCatalogState(jsonData)
 }
 
 // GetTableMetadata fetches the schema for a specific table name.
@@ -179,6 +182,32 @@ func (c *Catalog) GetTableMetadata(tableName string) (*Table, error) {
 	return table, nil
 }
 
+func (c *Catalog) GetTableByOid(tableOid common.ObjectID) (*Table, error) {
+	for _, table := range c.Tables {
+		if table.Oid == tableOid {
+			return table, nil
+		}
+	}
+	return nil, common.GoDBError{
+		Code:      common.NoSuchObjectError,
+		ErrString: fmt.Sprintf("table with OID '%d' does not exist", tableOid),
+	}
+}
+
+func (c *Catalog) GetIndexByOid(indexOid common.ObjectID) (*Index, error) {
+	for _, table := range c.Tables {
+		for _, index := range table.Indexes {
+			if index.Oid == indexOid {
+				return &index, nil
+			}
+		}
+	}
+	return nil, common.GoDBError{
+		Code:      common.NoSuchObjectError,
+		ErrString: fmt.Sprintf("index with OID '%d' does not exist", indexOid),
+	}
+}
+
 // FindTablesWithColumnName returns all tables that contain a column with
 // the given name. Used by the Query Optimizer to resolve identifiers.
 func (c *Catalog) FindTablesWithColumnName(columnName string) []*Table {
@@ -187,7 +216,7 @@ func (c *Catalog) FindTablesWithColumnName(columnName string) []*Table {
 
 // AddIndex attaches a new index definition to a table. If an index with that name
 // // already exists, it returns DuplicateObjectError.
-func (c *Catalog) AddIndex(indexName string, tableName string, indexType string, columnNames []string, provider PersistenceProvider) (*Index, error) {
+func (c *Catalog) AddIndex(indexName string, tableName string, indexType string, columnNames []string) (*Index, error) {
 	table, err := c.GetTableMetadata(tableName)
 	if err != nil {
 		return nil, err
@@ -232,7 +261,17 @@ func (c *Catalog) AddIndex(indexName string, tableName string, indexType string,
 	if err != nil {
 		return nil, err
 	}
-	return &idx, provider.SaveCatalogState(jsonData)
+	return &idx, c.persistenceProvider.SaveCatalogState(jsonData)
+}
+
+type NullPersistenceProvider struct{}
+
+func (NullPersistenceProvider) LoadCatalogState() (string, error) {
+	return "", os.ErrNotExist
+}
+
+func (NullPersistenceProvider) SaveCatalogState(json string) error {
+	return nil
 }
 
 const CatalogFileName = "catalog.json"

@@ -5,7 +5,6 @@ import (
 
 	"mit.edu/dsg/godb/catalog"
 	"mit.edu/dsg/godb/common"
-	"mit.edu/dsg/godb/logging"
 	"mit.edu/dsg/godb/storage"
 	"mit.edu/dsg/godb/transaction"
 )
@@ -17,12 +16,12 @@ type TableHeap struct {
 	oid         common.ObjectID
 	desc        *storage.RawTupleDesc
 	bufferPool  *storage.BufferPool
-	logManager  logging.LogManager
+	logManager  storage.LogManager
 	lockManager *transaction.LockManager
 }
 
 // NewTableHeap creates a TableHeap and performs a metadata scan to initialize stats.
-func NewTableHeap(table *catalog.Table, bufferPool *storage.BufferPool, logManager logging.LogManager, lockManager *transaction.LockManager) (*TableHeap, error) {
+func NewTableHeap(table *catalog.Table, bufferPool *storage.BufferPool, logManager storage.LogManager, lockManager *transaction.LockManager) (*TableHeap, error) {
 	panic("unimplemented")
 }
 

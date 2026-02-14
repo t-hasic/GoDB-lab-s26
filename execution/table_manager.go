@@ -5,7 +5,6 @@ import (
 
 	"mit.edu/dsg/godb/catalog"
 	"mit.edu/dsg/godb/common"
-	"mit.edu/dsg/godb/logging"
 	"mit.edu/dsg/godb/storage"
 	"mit.edu/dsg/godb/transaction"
 )
@@ -18,7 +17,7 @@ type TableManager struct {
 
 // NewTableManager initializes the TableManager and eagerly creates TableHeap instances
 // for all tables defined in the Catalog.
-func NewTableManager(catalog *catalog.Catalog, bufferPool *storage.BufferPool, logManager logging.LogManager, lockManager *transaction.LockManager) (*TableManager, error) {
+func NewTableManager(catalog *catalog.Catalog, bufferPool *storage.BufferPool, logManager storage.LogManager, lockManager *transaction.LockManager) (*TableManager, error) {
 	tm := &TableManager{
 		tables: make(map[common.ObjectID]*TableHeap),
 	}

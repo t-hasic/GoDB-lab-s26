@@ -125,8 +125,6 @@ type TransactionID uint64
 
 const InvalidTransactionID TransactionID = 0
 
-type LSN int64
-
 // Value represents a (deserialized) data item in a tuple.
 // It uses specific sentinel values for NULL handling:
 // - Int: math.MinInt64 represents NULL.
@@ -333,4 +331,17 @@ func (v Value) Compare(other Value) int {
 		return 0
 	}
 	panic("unreachable")
+}
+
+func (v Value) String() string {
+	if v.Type() == StringType {
+		if v.IsNull() {
+			return "NULL(string)"
+		}
+		return fmt.Sprintf("'%s'", v.StringValue())
+	}
+	if v.IsNull() {
+		return "NULL(int)"
+	}
+	return fmt.Sprintf("%d", v.IntValue())
 }

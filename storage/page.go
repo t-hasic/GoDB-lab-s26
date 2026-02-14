@@ -30,18 +30,18 @@ var isBigEndian = func() bool {
 }()
 
 // LSN atomically reads the Log Sequence Number from the page header.
-func (frame *PageFrame) LSN() common.LSN {
+func (frame *PageFrame) LSN() LSN {
 	ptr := (*uint64)(unsafe.Pointer(&frame.Bytes[pageOffsetLSN]))
 	val := atomic.LoadUint64(ptr)
 	if isBigEndian {
 		val = bits.ReverseBytes64(val)
 	}
-	return common.LSN(val)
+	return LSN(val)
 }
 
 // MonotonicallyUpdateLSN atomically updates the LSN. The update is atomic and is only applied if the given lsn is
 // larger than the current value.
-func (frame *PageFrame) MonotonicallyUpdateLSN(lsn common.LSN) {
+func (frame *PageFrame) MonotonicallyUpdateLSN(lsn LSN) {
 	ptr := (*uint64)(unsafe.Pointer(&frame.Bytes[pageOffsetLSN]))
 	newVal := uint64(lsn)
 

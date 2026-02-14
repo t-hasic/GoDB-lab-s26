@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -28,7 +27,7 @@ func setupBufferPool(t *testing.T, numPages int) (*BufferPool, *StatsDBFileManag
 		Files: xsync.NewMapOf[common.ObjectID, *StatsDBFile](),
 	}
 
-	bp := NewBufferPool(numPages, statsSm)
+	bp := NewBufferPool(numPages, statsSm, NoopLogManager{})
 	return bp, statsSm, rootPath
 }
 
@@ -123,7 +122,7 @@ func TestBufferPool_FlushAll(t *testing.T) {
 	require.NoError(t, err)
 
 	// Force flush everything, pins should not prevent flushing
-	err = bp.FlushAllPages(common.LSN(math.MaxInt64))
+	err = bp.FlushAllPages()
 	require.NoError(t, err)
 
 	// Verify disk
@@ -353,7 +352,7 @@ func TestBufferPool_Concurrent_LostUpdate(t *testing.T) {
 	go func() {
 		defer flusherWg.Done()
 		for !stopFlusher.Load() {
-			_ = bp.FlushAllPages(common.LSN(math.MaxInt64))
+			_ = bp.FlushAllPages()
 			time.Sleep(time.Millisecond)
 		}
 	}()
@@ -366,7 +365,7 @@ func TestBufferPool_Concurrent_LostUpdate(t *testing.T) {
 	flusherWg.Wait()
 
 	// Force Final Flush
-	err = bp.FlushAllPages(common.LSN(math.MaxInt64))
+	err = bp.FlushAllPages()
 	require.NoError(t, err)
 
 	// Verify Disk Persistence (Lost Update Check)
@@ -476,7 +475,7 @@ func TestBufferPool_Concurrent_Large(t *testing.T) {
 		binary.LittleEndian.PutUint64(f.Bytes[:], uint64(initialBalance))
 		bp.UnpinPage(f, true)
 	}
-	err := bp.FlushAllPages(common.LSN(math.MaxInt64))
+	err := bp.FlushAllPages()
 	require.NoError(t, err)
 
 	var wg sync.WaitGroup
@@ -550,7 +549,7 @@ func TestBufferPool_Concurrent_Large(t *testing.T) {
 	close(stopCh)
 	readerWg.Wait()
 
-	err = bp.FlushAllPages(common.LSN(math.MaxInt64))
+	err = bp.FlushAllPages()
 	require.NoError(t, err)
 
 	filePath := filepath.Join(rootPath, fmt.Sprintf("dbo_%d.dat", oid))

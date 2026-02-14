@@ -17,7 +17,9 @@ type BufferPool struct {
 
 // NewBufferPool creates a new BufferPool with a fixed capacity defined by numPages. It requires a
 // storageManager to handle the underlying disk I/O operations.
-func NewBufferPool(numPages int, storageManager DBFileManager) *BufferPool {
+//
+// Hint: You will need to worry about logManager until Lab 3
+func NewBufferPool(numPages int, storageManager DBFileManager, logManager LogManager) *BufferPool {
 	panic("unimplemented")
 }
 
@@ -43,9 +45,7 @@ func (bp *BufferPool) UnpinPage(frame *PageFrame, setDirty bool) {
 
 // FlushAllPages flushes all dirty pages to disk that have an LSN less than `flushedUntil`, regardless of pins.
 // This is typically called during a Checkpoint or Shutdown to ensure durability, but also useful for tests
-//
-// You can ignore the flushedUntil argument until lab 4
-func (bp *BufferPool) FlushAllPages(flushedUntil common.LSN) error {
+func (bp *BufferPool) FlushAllPages() error {
 	panic("unimplemented")
 }
 
@@ -54,7 +54,7 @@ func (bp *BufferPool) FlushAllPages(flushedUntil common.LSN) error {
 // state of the database.
 //
 // Hint: You do not need to worry about this function until lab 4
-func (bp *BufferPool) GetDirtyPageTableSnapshot() map[common.PageID]common.LSN {
+func (bp *BufferPool) GetDirtyPageTableSnapshot() map[common.PageID]LSN {
 	// You will not need to implement this until lab4
 	panic("unimplemented")
 }
