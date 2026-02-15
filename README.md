@@ -228,7 +228,7 @@ The easiest way to submit to Gradescope is with `.zip` files containing your
 code. On Linux/macOS, you can do so by running the following command:
 
 ```bash
-$ zip -r lab1_submission.zip . -x "*.git*"
+$ zip -r lab_submission.zip . -x "*.git*"
 ```
 
 ## <a name="submitting-bug">Submitting a bug</a>
