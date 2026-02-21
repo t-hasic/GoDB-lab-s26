@@ -1,5 +1,6 @@
-6.5830/6.5831 Labs
-==================
+Tarik
+
+# 6.5830/6.5831 Labs
 
 Git repository for labs in [6.5830/6.5831](http://dsg.csail.mit.edu/6.5830/).
 
@@ -80,6 +81,7 @@ You should have Git installed from the previous section.
    ```bash
     $ git pull
    ```
+
    to get the latest.
 
    That's it. You can start working on the labs! That said, we strongly encourage you to use git for more than just
@@ -141,7 +143,6 @@ You should have Git installed from the previous section.
 
    For reference, your final `git remote -v` should look like following when it's setup correctly:
 
-
    ```bash
     $ git remote -v
         upstream https://github.com/MIT-DB-Class/GoDB-lab-s26.git (fetch)
@@ -169,7 +170,6 @@ You should have Git installed from the previous section.
     * [new branch]      main -> main
    Branch main set up to track remote branch main from origin.
    ```
-
 
 6. That last command was a bit special and only needs to be run the first time to setup the remote tracking branches.
    Now we should be able to just run `git push` without the arguments. Try it and you should get the following:
@@ -206,12 +206,14 @@ on the instructions in the last section.
     $ git fetch upstream
     $ git merge upstream/main
    ```
+
    Now commit to your main branch:
+
    ```bash
    $ git push origin main
    ```
 
-3. If you've followed the instructions in each lab, you should have no merge conflicts.  If you encounter merge conflicts, please reach out to course staff.
+3. If you've followed the instructions in each lab, you should have no merge conflicts. If you encounter merge conflicts, please reach out to course staff.
 
 ## <a name="submitting-labs">Submitting Labs</a>
 
@@ -219,10 +221,10 @@ We will be using Gradescope to autograde all programming assignments. You should
 have all been invited to the class instance; if not, please check Piazza for an
 invite code. If you are still having trouble, let us know and we can help you
 set up. You may submit your code multiple times before the deadline; we will use
-the latest version as determined by Gradescope. 
+the latest version as determined by Gradescope.
 
 If you are working with a partner, only one person needs to submit to
-Gradescope. However, make sure to add the other person to your group. 
+Gradescope. However, make sure to add the other person to your group.
 
 The easiest way to submit to Gradescope is with `.zip` files containing your
 code. On Linux/macOS, you can do so by running the following command:
@@ -237,9 +239,9 @@ Please submit (friendly!) bug reports to
 [6.5830-staff@mit.edu](mailto:6.5830-staff@mit.edu). When you do, please try to
 include:
 
-* A description of the bug.
-* A `.go` file with test functions that we can drop into the `godb` directory, compile, and run.
-* A `.txt` file with the data that reproduces the bug.
+- A description of the bug.
+- A `.go` file with test functions that we can drop into the `godb` directory, compile, and run.
+- A `.txt` file with the data that reproduces the bug.
 
 If you are the first person to report a particular bug in the code, we will give
 you a candy bar!
@@ -272,7 +274,7 @@ it!
 ## <a name="word-of-caution">Word of Caution</a>
 
 Git is a distributed version control system. This means everything operates
-*offline* until you run `git pull` or `git push`. This is a great feature.
+_offline_ until you run `git pull` or `git push`. This is a great feature.
 
 However, one consequence of this is that you may forget to `git push` your
 changes. This is why we **strongly** suggest that you check GitHub to be sure
@@ -284,21 +286,12 @@ If at any point you need help with setting all this up, feel free to reach out t
 Their contact information can be found on the [course homepage](http://dsg.csail.mit.edu/6.5830/).
 
 [gitbook]: http://git-scm.com/book/en/Getting-Started-Installing-Git
-
 [intellij-help]: https://www.jetbrains.com/help/idea/version-control-integration.html
-
 [join]: https://github.com/join
-
 [labs-github]: https://github.com/MIT-DB-Class/GoDB-lab-s26.git
-
 [missing-semester-version-control]: https://missing.csail.mit.edu/2020/version-control/
-
 [omg]: https://ohmygit.org/
-
 [resources]: https://help.github.com/articles/what-are-other-good-resources-for-learning-git-and-github
-
 [ssh-key]: https://help.github.com/articles/generating-ssh-keys
-
 [vscode-github]: https://code.visualstudio.com/docs/editor/github
-
 [vscode-version-control]: https://code.visualstudio.com/Docs/editor/versioncontrol#_git-support
