@@ -12,6 +12,12 @@ import (
 // pageOffsetLSN is the byte offset of the LSN within the page.
 const pageOffsetLSN = 0
 
+type frameState int // INVALID, LOADING, VALID
+const (
+	INVALID frameState = iota
+	LOADING
+	VALID
+)
 // PageFrame represents a physical page of data in memory.
 // It holds the raw bytes of the page and acts as the container for Buffer Pool management.
 type PageFrame struct {
@@ -20,6 +26,13 @@ type PageFrame struct {
 	// PageLatch protects the content of the page from concurrent access.
 	PageLatch sync.RWMutex
 	// Hint: You will need to add fields and synchronization structures here to track the state of this page.
+	metadataMutex sync.Mutex
+	pageID common.PageID
+	index int
+	pinCount int
+	dirty bool
+	state frameState
+	loadDone chan struct{}
 }
 
 // Detect system endianness -- compiler should statically replace this with a constant
