@@ -274,22 +274,19 @@ func (NullPersistenceProvider) SaveCatalogState(json string) error {
 	return nil
 }
 
-const CatalogFileName = "catalog.json"
-
 type DiskCatalogManager struct {
-	rootPath string
+	path string
 }
 
-func NewDiskCatalogManager(rootPath string) *DiskCatalogManager {
+func NewDiskCatalogManager(path string) *DiskCatalogManager {
 	return &DiskCatalogManager{
-		rootPath: rootPath,
+		path: path,
 	}
 }
 
 // LoadCatalogState implements the catalog.PersistenceProvider interface.
 func (dcm *DiskCatalogManager) LoadCatalogState() (string, error) {
-	path := filepath.Join(dcm.rootPath, CatalogFileName)
-	content, err := os.ReadFile(path)
+	content, err := os.ReadFile(dcm.path)
 	if err != nil {
 		return "", err // Let the caller (Catalog) handle os.ErrNotExist
 	}
@@ -299,12 +296,9 @@ func (dcm *DiskCatalogManager) LoadCatalogState() (string, error) {
 // SaveCatalogState implements the catalog.PersistenceProvider interface.
 func (dcm *DiskCatalogManager) SaveCatalogState(jsonData string) error {
 	// perform an atomic WriteToFullTuple using a temporary file.
-	tmpPath := filepath.Join(dcm.rootPath, CatalogFileName+".tmp")
-	finalPath := filepath.Join(dcm.rootPath, CatalogFileName)
-
+	tmpPath := filepath.Join(dcm.path, ".tmp")
 	if err := os.WriteFile(tmpPath, []byte(jsonData), 0644); err != nil {
 		return err
 	}
-
-	return os.Rename(tmpPath, finalPath)
+	return os.Rename(tmpPath, dcm.path)
 }
