@@ -62,6 +62,13 @@ func NewLogicalJoinNode(left, right LogicalPlanNode, joinOn []Expr, joinType Joi
 func (n *LogicalJoinNode) Children() []LogicalPlanNode { return []LogicalPlanNode{n.Left, n.Right} }
 
 func (n *LogicalJoinNode) OutputSchema() LogicalSchema {
+	outputSchema := make(LogicalSchema, 0, len(n.Left.OutputSchema())+len(n.Right.OutputSchema()))
+	outputSchema = append(outputSchema, n.Left.OutputSchema()...)
+	outputSchema = append(outputSchema, n.Right.OutputSchema()...)
+	return outputSchema
+}
+
+func (n *LogicalJoinNode) RawOutputSchema() LogicalSchema {
 	return n.outputSchema
 }
 

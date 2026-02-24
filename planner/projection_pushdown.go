@@ -1,7 +1,5 @@
 package planner
 
-// import "fmt"
-
 type ProjectionPushDownRule struct{}
 
 func (r *ProjectionPushDownRule) Name() string { return "ProjectionPushDown" }
@@ -54,10 +52,17 @@ func (r *ProjectionPushDownRule) PostProcess(node LogicalPlanNode) LogicalPlanNo
 		if childProj, isChildProj := proj.Child.(*LogicalProjectionNode); isChildProj {
 
 			if childProj.OutputSchema().Covers(myReqs) && childProj.OutputSchema().Covers(proj.OutputSchema()) {
-				return childProj
+				proj.Child = childProj.Child
+				return proj
 			} else {
 				panic("Error in logical query optimization - ProjectionPushDownRule PostProcess: child projection does not cover required/output schema of parent projection.")
 			}
+		}
+		if childScan, isChildScan := proj.Child.(*LogicalScanNode); isChildScan {
+			// Attach projection node to the scan node for more idiomatic optimizations during the
+			// physicalization step.
+			childScan.AddProjection(proj)
+			return childScan
 		}
 		return node
 	}
@@ -73,7 +78,7 @@ func (r *ProjectionPushDownRule) PostProcess(node LogicalPlanNode) LogicalPlanNo
 		projections := myReqs.GetExprs()
 		newNode := NewLogicalProjectionNode(node, projections, myReqs)
 		newNode.SetRequiredSchema(myReqs)
-		return newNode
+		return r.PostProcess(newNode)
 	}
 
 	return node

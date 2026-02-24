@@ -73,7 +73,6 @@ func (index *MemBTreeIndex) DeleteEntry(key Key, rid common.RecordID, txn *trans
 
 func (index *MemBTreeIndex) ScanKey(key Key, output []common.RecordID, txn *transaction.TransactionContext) ([]common.RecordID, error) {
 	common.Assert(key.schema == index.metadata.KeySchema, "Key schema mismatch")
-
 	// Create a pivot to find the first entry with this key.
 	// We use an empty RecordID for the pivot start.
 	pivot := btreeItem{key: key, rid: common.RecordID{}}

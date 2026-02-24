@@ -69,6 +69,169 @@ func (b *ExpressionBinder) BindExpr(e Expr, logicalSchema LogicalSchema, physica
 	return e
 }
 
+// BindExpr shifts all BoundValueExprs' integer offsets by a fixed constant
+// additional offset.
+func (b *ExpressionBinder) ShiftExpr(e Expr, shiftOffset int) Expr {
+	switch v := e.(type) {
+	case *BoundValueExpr:
+		return &BoundValueExpr{
+			fieldOffset: v.fieldOffset + shiftOffset,
+			outputType:  v.outputType,
+			name:        v.name,
+		}
+
+	case *ComparisonExpression:
+		return NewComparisonExpression(
+			b.ShiftExpr(v.left, shiftOffset),
+			b.ShiftExpr(v.right, shiftOffset),
+			v.compType,
+		)
+	case *BinaryLogicExpression:
+		return NewBinaryLogicExpression(
+			b.ShiftExpr(v.left, shiftOffset),
+			b.ShiftExpr(v.right, shiftOffset),
+			v.logicType,
+		)
+	case *ArithmeticExpression:
+		return NewArithmeticExpression(
+			b.ShiftExpr(v.left, shiftOffset),
+			b.ShiftExpr(v.right, shiftOffset),
+			v.op,
+		)
+	case *NegationExpression:
+		return NewNegationExpression(
+			b.ShiftExpr(v.child, shiftOffset),
+		)
+	case *NullCheckExpression:
+		return NewNullCheckExpression(
+			b.ShiftExpr(v.child, shiftOffset),
+			v.checkType,
+		)
+	case *StringConcatExpression:
+		return NewStringConcatenation(
+			b.ShiftExpr(v.left, shiftOffset),
+			b.ShiftExpr(v.right, shiftOffset),
+		)
+	case *LikeExpression:
+		return NewLikeExpression(
+			b.ShiftExpr(v.left, shiftOffset),
+			b.ShiftExpr(v.right, shiftOffset),
+		)
+	case *ConstantValueExpr:
+		return v
+	}
+	return e
+}
+
+/*
+For now, FuseProjectionIntoExpr only handles the case where the child projection does not involve any expression
+evaluation (i.e. it's just a projection of columns from its child). In this case, we can directly replace
+references to the LogicalColumns in the parent projection with the corresponding expressions from the child
+projection.
+
+TODO: Supports more complex cases where the child projection involves expression evaluation (e.g. projecting a + b).
+*/
+func (b *ExpressionBinder) FuseProjectionIntoExpr(e Expr, childLogicalSchema LogicalSchema, childExpressions []Expr) (Expr, error) {
+	switch v := e.(type) {
+	case *LogicalColumn:
+		for i, logicalCol := range childLogicalSchema {
+			if v.Equals(logicalCol) {
+				return childExpressions[i], nil
+			}
+		}
+		return nil, fmt.Errorf("ExpressionBinder.FuseProjectionIntoExpr: Column %s not found in child expressions, cannot fuse projection", v.cname)
+
+	case *ComparisonExpression:
+		leftFused, err := b.FuseProjectionIntoExpr(v.left, childLogicalSchema, childExpressions)
+		if err != nil {
+			return nil, err
+		}
+		rightFused, err := b.FuseProjectionIntoExpr(v.right, childLogicalSchema, childExpressions)
+		if err != nil {
+			return nil, err
+		}
+		return NewComparisonExpression(
+			leftFused,
+			rightFused,
+			v.compType,
+		), nil
+	case *BinaryLogicExpression:
+		leftFused, err := b.FuseProjectionIntoExpr(v.left, childLogicalSchema, childExpressions)
+		if err != nil {
+			return nil, err
+		}
+		rightFused, err := b.FuseProjectionIntoExpr(v.right, childLogicalSchema, childExpressions)
+		if err != nil {
+			return nil, err
+		}
+		return NewBinaryLogicExpression(
+			leftFused,
+			rightFused,
+			v.logicType,
+		), nil
+	case *ArithmeticExpression:
+		leftFused, err := b.FuseProjectionIntoExpr(v.left, childLogicalSchema, childExpressions)
+		if err != nil {
+			return nil, err
+		}
+		rightFused, err := b.FuseProjectionIntoExpr(v.right, childLogicalSchema, childExpressions)
+		if err != nil {
+			return nil, err
+		}
+		return NewArithmeticExpression(
+			leftFused,
+			rightFused,
+			v.op,
+		), nil
+	case *NegationExpression:
+		childFused, err := b.FuseProjectionIntoExpr(v.child, childLogicalSchema, childExpressions)
+		if err != nil {
+			return nil, err
+		}
+		return NewNegationExpression(
+			childFused,
+		), nil
+	case *NullCheckExpression:
+		childFused, err := b.FuseProjectionIntoExpr(v.child, childLogicalSchema, childExpressions)
+		if err != nil {
+			return nil, err
+		}
+		return NewNullCheckExpression(
+			childFused,
+			v.checkType,
+		), nil
+	case *StringConcatExpression:
+		leftFused, err := b.FuseProjectionIntoExpr(v.left, childLogicalSchema, childExpressions)
+		if err != nil {
+			return nil, err
+		}
+		rightFused, err := b.FuseProjectionIntoExpr(v.right, childLogicalSchema, childExpressions)
+		if err != nil {
+			return nil, err
+		}
+		return NewStringConcatenation(
+			leftFused,
+			rightFused,
+		), nil
+	case *LikeExpression:
+		leftFused, err := b.FuseProjectionIntoExpr(v.left, childLogicalSchema, childExpressions)
+		if err != nil {
+			return nil, err
+		}
+		rightFused, err := b.FuseProjectionIntoExpr(v.right, childLogicalSchema, childExpressions)
+		if err != nil {
+			return nil, err
+		}
+		return NewLikeExpression(
+			leftFused,
+			rightFused,
+		), nil
+	case *ConstantValueExpr:
+		return v, nil
+	}
+	return nil, fmt.Errorf("ExpressionBinder.FuseProjectionIntoExpr: Unsupported expression type %T in projection fusion", e)
+}
+
 type PhysicalPlanBuilder struct {
 	catalog    *catalog.Catalog
 	rules      []PhysicalConversionRule

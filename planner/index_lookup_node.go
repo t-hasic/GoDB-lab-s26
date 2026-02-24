@@ -35,7 +35,7 @@ func (n *IndexLookupNode) Children() []PlanNode {
 }
 
 func (n *IndexLookupNode) String() string {
-	return fmt.Sprintf("IndexProbe: IndexOID(%d)", n.IndexOid)
+	return fmt.Sprintf("IndexProbe: IndexOID(%d) with Key %v", n.IndexOid, n.EqualityKey)
 }
 
 /*

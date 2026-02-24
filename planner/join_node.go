@@ -34,7 +34,7 @@ func (n *HashJoinNode) Children() []PlanNode {
 }
 
 func (n *HashJoinNode) String() string {
-	return fmt.Sprintf("HashJoin: %v = %v", n.LeftKeys, n.LeftKeys)
+	return fmt.Sprintf("HashJoin: %v = %v", n.LeftKeys, n.RightKeys)
 }
 
 // NestedLoopJoinNode represents a block nested loop join.
@@ -97,7 +97,7 @@ func (n *IndexNestedLoopJoinNode) Children() []PlanNode {
 }
 
 func (n *IndexNestedLoopJoinNode) String() string {
-	return fmt.Sprintf("IndexJoin: Table(%d) via Index(%d)", n.RightTableOid, n.RightIndexOid)
+	return fmt.Sprintf("IndexJoin: Table(%d) via Index(%d), outputSchema=%v", n.RightTableOid, n.RightIndexOid, n.outputSchema)
 }
 
 // SortMergeJoinNode represents a join where both children are sorted on the join keys.

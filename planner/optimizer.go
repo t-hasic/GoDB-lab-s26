@@ -87,6 +87,8 @@ func setChildren(node LogicalPlanNode, children []LogicalPlanNode) LogicalPlanNo
 		return NewLogicalDeleteNode(n.TableOid, children[0])
 	case *LogicalUpdateNode:
 		return NewLogicalUpdateNode(n.TableOid, children[0], n.Updates)
+	case *LogicalSubqueryNode:
+		return NewLogicalSubqueryNode(n.TableRef, children[0], n.subquery)
 	default:
 		panic("Unsupported node type in setChildren: " + node.String())
 	}

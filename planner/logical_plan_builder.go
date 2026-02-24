@@ -162,12 +162,36 @@ func (b *LogicalPlanBuilder) bindExpr(expr sqlparser.Expr, scope *FromScope) (Ex
 					return match, nil
 				}
 			}
+			if _, ok := v.Exprs[0].(*sqlparser.AliasedExpr); ok {
+				if match := findInScope(fmt.Sprintf("COUNT(%s)", sqlparser.String(v.Exprs[0]))); match != nil {
+					return match, nil
+				}
+			}
 		}
 
 		return nil, fmt.Errorf("Unsupported function: %s", funcName)
 
 	default:
 		return nil, fmt.Errorf("Unsupported expression type: %T", expr)
+	}
+}
+
+/*
+printScope pretty prints the source tables and their schemas in the current scope.
+Useful for debugging.
+*/
+func (b *LogicalPlanBuilder) printScope(scope *FromScope) {
+	for _, tableRef := range scope.sourceTables {
+		var tableName string
+		if tableRef.table != nil {
+			tableName = tableRef.table.Name
+		} else {
+			tableName = "subquery"
+		}
+		fmt.Printf("Table: %s, Alias: %s\n", tableName, tableRef.alias)
+		for _, col := range tableRef.schema {
+			fmt.Printf("  Column: %s, Type: %s\n", col.cname, col.ctype)
+		}
 	}
 }
 
@@ -182,7 +206,7 @@ func (b *LogicalPlanBuilder) bindColumn(col *sqlparser.ColName, scope *FromScope
 	var match *LogicalColumn
 
 	for _, ref := range scope.sourceTables {
-		if tableAlias != "" && ref.alias != tableAlias {
+		if tableAlias != "" && !strings.HasPrefix(ref.alias, "agg") && ref.alias != tableAlias {
 			continue
 		}
 		for _, logicalCol := range ref.schema {
@@ -634,13 +658,14 @@ func (b *LogicalPlanBuilder) planAggregation(sel *sqlparser.Select, child Logica
 	aggNode := NewLogicalAggregationNode(child, groupByExprs, aggClauses)
 
 	// Update the Scope
+	refID := b.getNextTableRefID()
 	newScope := &FromScope{
 		sourceTables: []*TableRef{
 			{
 				schema: aggNode.OutputSchema(),
 				table:  nil,
-				alias:  "",
-				refID:  0,
+				alias:  fmt.Sprintf("agg_%d", refID),
+				refID:  refID,
 			},
 		},
 	}

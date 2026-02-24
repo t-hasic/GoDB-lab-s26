@@ -1,6 +1,8 @@
 package planner
 
 import (
+	"fmt"
+
 	"mit.edu/dsg/godb/catalog"
 	"mit.edu/dsg/godb/common"
 )
@@ -32,9 +34,21 @@ func wrapInFilter(child PlanNode, preds []Expr, logicalInputSchema LogicalSchema
 	for i := 1; i < len(preds); i++ {
 		finalPred = NewBinaryLogicExpression(finalPred, preds[i], And)
 	}
-
 	physPred := exprBinder.BindExpr(finalPred, logicalInputSchema, child.OutputSchema())
 	return NewFilterNode(child, physPred)
+}
+
+/*
+TODO: Passthrough
+*/
+func getIdentityPhysicalExprs(logicalSchema LogicalSchema, physicalInputSchema []common.Type, exprBinder *ExpressionBinder) []Expr {
+
+	physExprs := make([]Expr, len(logicalSchema))
+	for i, expr := range logicalSchema {
+		physExprs[i] = exprBinder.BindExpr(expr, logicalSchema, physicalInputSchema)
+	}
+
+	return physExprs
 }
 
 type LimitRule struct{}
@@ -123,8 +137,31 @@ func (r *ProjectionRule) Apply(node LogicalPlanNode, children []PlanNode, catalo
 	childPlan := children[0]
 
 	physExprs := make([]Expr, len(proj.Expressions))
+
+	if childProj, ok := childPlan.(*ProjectionNode); ok {
+		// If my child is already a projection, we can fuse my projection expressions with my child's projection expressions.
+		// This allows us to avoid creating back-to-back projection nodes in the physical plan, which can be inefficient.
+		var projectionFused bool = true
+		for i, expr := range proj.Expressions {
+			fusedExpr, err := exprBinder.FuseProjectionIntoExpr(expr, proj.Child.OutputSchema(), childProj.Expressions)
+			if err != nil {
+				fmt.Printf("Failed to fuse projection expression: %v. Falling back to separate projection node.\n", err)
+				projectionFused = false
+				break
+			}
+			physExprs[i] = fusedExpr
+		}
+		if projectionFused {
+			return NewProjectionNode(childProj.Child, physExprs), nil
+		}
+	}
+
+	logicalInputSchema := proj.Child.OutputSchema()
+	if scan, ok := proj.Child.(*LogicalScanNode); ok {
+		logicalInputSchema = scan.RawOutputSchema()
+	}
 	for i, expr := range proj.Expressions {
-		physExprs[i] = exprBinder.BindExpr(expr, proj.Child.OutputSchema(), childPlan.OutputSchema())
+		physExprs[i] = exprBinder.BindExpr(expr, logicalInputSchema, childPlan.OutputSchema())
 	}
 
 	return NewProjectionNode(childPlan, physExprs), nil
@@ -231,7 +268,7 @@ func (r *UpdateRule) Apply(node LogicalPlanNode, children []PlanNode, c *catalog
 	for colIdx, targetCol := range table.Columns {
 		// lookup the LogicalColumn for this column name in the update's set clause
 		var logicalCol *LogicalColumn
-		for col, _ := range update.Updates {
+		for col := range update.Updates {
 			if col.cname == targetCol.Name {
 				logicalCol = col
 				break

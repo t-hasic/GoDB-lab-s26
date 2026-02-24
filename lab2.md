@@ -358,7 +358,8 @@ and play with different queries. If you find bugs in the command line tool, or f
 This lab has an autograded component. Create a zip file containing your `godb` directory and your write-up.
 
 ```bash
-zip -r lab2_submission.zip -x "*.git*"
+zip -r lab2_submission.zip . -x "*.git*"
+
 
 ```
 Upload this zip file to [Gradescope].

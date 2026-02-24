@@ -14,23 +14,41 @@ Returns:
 2. The expression from the Right schema
 3. True if it is a valid equi-join condition
 */
-func isEquiJoin(expr Expr, leftSchema, rightSchema LogicalSchema) (Expr, Expr, bool) {
-	cmp, ok := expr.(*ComparisonExpression)
-	if !ok || cmp.compType != Equal {
-		return nil, nil, false
+func isEquiJoin(expr Expr, leftSchema, rightSchema LogicalSchema) ([]Expr, []Expr, bool) {
+	switch cmp := expr.(type) {
+	case *ComparisonExpression:
+		if cmp.compType != Equal {
+			return nil, nil, false
+		}
+		leftExpr := cmp.left
+		rightExpr := cmp.right
+
+		if leftSchema.CoversExpr(leftExpr) && rightSchema.CoversExpr(rightExpr) {
+			return []Expr{leftExpr}, []Expr{rightExpr}, true
+		}
+
+		if leftSchema.CoversExpr(rightExpr) && rightSchema.CoversExpr(leftExpr) {
+			return []Expr{rightExpr}, []Expr{leftExpr}, true
+		}
+	case *BinaryLogicExpression:
+		if cmp.logicType != And {
+			return nil, nil, false
+		}
+		resultLKeys := make([]Expr, 0)
+		resultRKeys := make([]Expr, 0)
+		// Recursively check both sides of the AND for equi-join conditions.
+		if lKey, rKey, ok := isEquiJoin(cmp.left, leftSchema, rightSchema); ok {
+			resultLKeys = append(resultLKeys, lKey...)
+			resultRKeys = append(resultRKeys, rKey...)
+		}
+		if lKey, rKey, ok := isEquiJoin(cmp.right, leftSchema, rightSchema); ok {
+			resultLKeys = append(resultLKeys, lKey...)
+			resultRKeys = append(resultRKeys, rKey...)
+		}
+		if len(resultLKeys) > 0 && len(resultRKeys) > 0 {
+			return resultLKeys, resultRKeys, true
+		}
 	}
-
-	leftExpr := cmp.left
-	rightExpr := cmp.right
-
-	if leftSchema.CoversExpr(leftExpr) && rightSchema.CoversExpr(rightExpr) {
-		return leftExpr, rightExpr, true
-	}
-
-	if leftSchema.CoversExpr(rightExpr) && rightSchema.CoversExpr(leftExpr) {
-		return rightExpr, leftExpr, true
-	}
-
 	return nil, nil, false
 }
 
@@ -43,12 +61,14 @@ type JoinKeyPair struct {
 func getEquiJoinKeys(n *LogicalJoinNode) []JoinKeyPair {
 	var pairs []JoinKeyPair
 	for _, cond := range n.joinOn {
-		if lKey, rKey, ok := isEquiJoin(cond, n.Left.OutputSchema(), n.Right.OutputSchema()); ok {
-			pairs = append(pairs, JoinKeyPair{
-				Left:         lKey,
-				Right:        rKey,
-				OriginalExpr: cond,
-			})
+		if lKeys, rKeys, ok := isEquiJoin(cond, n.Left.OutputSchema(), n.Right.OutputSchema()); ok {
+			for i := range lKeys {
+				pairs = append(pairs, JoinKeyPair{
+					Left:         lKeys[i],
+					Right:        rKeys[i],
+					OriginalExpr: cond,
+				})
+			}
 		}
 	}
 	return pairs
@@ -147,6 +167,7 @@ func (r *IndexNestedLoopJoinRule) Match(node LogicalPlanNode, children []PlanNod
 }
 
 func (r *IndexNestedLoopJoinRule) Apply(node LogicalPlanNode, children []PlanNode, c *catalog.Catalog, exprBinder *ExpressionBinder) (PlanNode, error) {
+	common.Assert(len(children) == 2, "IndexedNestedLoopJoin must have 2 children.")
 	join := node.(*LogicalJoinNode)
 	rightScan := join.Right.(*LogicalScanNode)
 	leftPlan := children[0]
@@ -161,8 +182,9 @@ func (r *IndexNestedLoopJoinRule) Apply(node LogicalPlanNode, children []PlanNod
 		currentIdx := idx
 		match := analyzeJoinIndex(&currentIdx, equiKeys)
 
-		if match.NumMatchedColumns > 0 {
-			if bestMatch == nil || match.NumMatchedColumns > bestMatch.NumMatchedColumns {
+		// TODO: Support partial index match (e.g., index on (a, b, c) but only 'a' is matched). For now, we require all keys to be used during lookup.
+		if match.NumMatchedColumns == len(idx.KeySchema) {
+			if bestMatch == nil {
 				bestMatch = match
 				bestIdx = &currentIdx
 			}
@@ -201,6 +223,26 @@ func (r *IndexNestedLoopJoinRule) Apply(node LogicalPlanNode, children []PlanNod
 		}
 	}
 
+	// If right child involves a projection, push the projection back up.
+	// Left side uses identity projections (can implement pass-through in the future)
+	// Right side projections modified with additional offset
+	if rightScan.projection != nil {
+		// Start with left side identity projections
+		fullProjections := getIdentityPhysicalExprs(join.Left.OutputSchema(), leftPlan.OutputSchema(), exprBinder)
+		leftWidth := len(fullProjections)
+		proj, projOk := children[1].(*ProjectionNode)
+		common.Assert(projOk, "If logical Scan carries projection, physical scan must be wrapped in projection.")
+		for _, e := range proj.Expressions {
+			fullProjections = append(fullProjections, exprBinder.ShiftExpr(e, leftWidth))
+		}
+		projNode := NewProjectionNode(joinNode, fullProjections)
+		if len(residuals) > 0 {
+			fullLogicalSchema := append(join.Left.OutputSchema(), join.Right.OutputSchema()...)
+			return wrapInFilter(projNode, residuals, fullLogicalSchema, exprBinder), nil
+		}
+		return projNode, nil
+	}
+
 	if len(residuals) > 0 {
 		fullLogicalSchema := append(join.Left.OutputSchema(), join.Right.OutputSchema()...)
 		return wrapInFilter(joinNode, residuals, fullLogicalSchema, exprBinder), nil
@@ -224,10 +266,29 @@ func (r *SortMergeJoinRule) Match(node LogicalPlanNode, children []PlanNode, cat
 	// This prevents us from picking a slow SMJ plan when a Hash Join would be better.
 	// (Note: In a real DB, we would check if the underlying streams are sorted and potentially inspect whether we
 	//  expect the output to be sorted)
-	_, leftIsIndex := children[0].(*IndexScanNode)
-	_, rightIsIndex := children[1].(*IndexScanNode)
+	var smjOk = true
+	switch c1 := children[0].(type) {
+	case *IndexScanNode:
+	case *ProjectionNode:
+		// Allow a projection on top of an index scan
+		if _, ok := c1.Child.(*IndexScanNode); !ok {
+			smjOk = false
+		}
+	default:
+		smjOk = false
+	}
+	switch c2 := children[1].(type) {
+	case *IndexScanNode:
+	case *ProjectionNode:
+		// Allow a projection on top of an index scan
+		if _, ok := c2.Child.(*IndexScanNode); !ok {
+			smjOk = false
+		}
+	default:
+		smjOk = false
+	}
 
-	return leftIsIndex && rightIsIndex
+	return smjOk
 }
 
 func (r *SortMergeJoinRule) Apply(node LogicalPlanNode, children []PlanNode, catalog *catalog.Catalog, exprBinder *ExpressionBinder) (PlanNode, error) {

@@ -25,7 +25,7 @@ func NewSQLPlanner(c *catalog.Catalog, logicalRules []LogicalRule, physicalRules
 
 // Plan takes a SQL string and returns a constructed Physical Plan tree.
 // It handles the pipeline: SQL -> AST -> Logical -> Optimized -> Physical.
-func (p *SQLPlanner) Plan(sql string) (PlanNode, error) {
+func (p *SQLPlanner) Plan(sql string, silent bool) (PlanNode, error) {
 	stmt, err := sqlparser.Parse(sql)
 	if err != nil {
 		return nil, fmt.Errorf("parse error: %w", err)
@@ -36,7 +36,15 @@ func (p *SQLPlanner) Plan(sql string) (PlanNode, error) {
 		return nil, fmt.Errorf("logical planning error: %w", err)
 	}
 
+	if !silent {
+		fmt.Printf("Initial Logical Plan:\n%s\n", PrettyPrintLogicalPlan(logicalPlan))
+	}
+
 	optimizedPlan := p.opt.Optimize(logicalPlan)
+
+	if !silent {
+		fmt.Printf("Optimized Logical Plan:\n%s\n", PrettyPrintLogicalPlan(optimizedPlan))
+	}
 
 	physicalPlan, err := p.pb.Build(optimizedPlan)
 	if err != nil {

@@ -25,9 +25,9 @@ func (r *SeqScanRule) Priority() int {
 	return 0
 }
 
-func (r *SeqScanRule) Apply(node LogicalPlanNode, children []PlanNode, catalog *catalog.Catalog, exprBinder *ExpressionBinder) (PlanNode, error) {
+func (r *SeqScanRule) Apply(node LogicalPlanNode, children []PlanNode, c *catalog.Catalog, exprBinder *ExpressionBinder) (PlanNode, error) {
 	scanNode := node.(*LogicalScanNode)
-	table, err := catalog.GetTableByOid(scanNode.GetTableOid())
+	table, err := c.GetTableByOid(scanNode.GetTableOid())
 	if err != nil {
 		return nil, err
 	}
@@ -36,25 +36,41 @@ func (r *SeqScanRule) Apply(node LogicalPlanNode, children []PlanNode, catalog *
 		lockMode = transaction.LockModeX
 	}
 	physicalNode := NewSeqScanNode(scanNode.GetTableOid(), tableSchemaToTypes(table), lockMode)
+
+	if scanNode.projection != nil {
+		var plan PlanNode = physicalNode
+		if len(scanNode.Predicates) > 0 {
+			plan = wrapInFilter(plan, scanNode.Predicates, scanNode.RawOutputSchema(), exprBinder)
+		}
+		projectionRule := &ProjectionRule{}
+		projNode, _ := projectionRule.Apply(scanNode.projection, []PlanNode{plan}, c, exprBinder)
+		return projNode, nil
+	}
+
 	if len(scanNode.Predicates) > 0 {
-		return wrapInFilter(physicalNode, scanNode.Predicates, scanNode.OutputSchema(), exprBinder), nil
+		return wrapInFilter(physicalNode, scanNode.Predicates, scanNode.RawOutputSchema(), exprBinder), nil
 	}
 	return physicalNode, nil
 }
 
 func isEqualityScan(expr Expr, tableAlias string) (*LogicalColumn, common.Value, bool) {
-	if cmp, ok := expr.(*ComparisonExpression); ok && cmp.compType == Equal {
-		if col, ok := cmp.left.(*LogicalColumn); ok {
-			if val, ok := cmp.right.(*ConstantValueExpr); ok {
-				if col.origin.alias == tableAlias {
-					return col, val.val, true
+	switch cmp := expr.(type) {
+	case *ComparisonExpression:
+		if cmp.compType != Equal {
+			return nil, common.NewNullInt(), false
+		} else {
+			if col, ok := cmp.left.(*LogicalColumn); ok {
+				if val, ok := cmp.right.(*ConstantValueExpr); ok {
+					if col.origin.alias == tableAlias {
+						return col, val.val, true
+					}
 				}
 			}
-		}
-		if col, ok := cmp.right.(*LogicalColumn); ok {
-			if val, ok := cmp.left.(*ConstantValueExpr); ok {
-				if col.origin.alias == tableAlias {
-					return col, val.val, true
+			if col, ok := cmp.right.(*LogicalColumn); ok {
+				if val, ok := cmp.left.(*ConstantValueExpr); ok {
+					if col.origin.alias == tableAlias {
+						return col, val.val, true
+					}
 				}
 			}
 		}
@@ -63,25 +79,27 @@ func isEqualityScan(expr Expr, tableAlias string) (*LogicalColumn, common.Value,
 }
 
 func isRangeScan(expr Expr, tableAlias string) (*LogicalColumn, common.Value, ComparisonType, bool) {
-	cmp, ok := expr.(*ComparisonExpression)
-	if !ok {
-		return nil, common.NewNullInt(), 0, false
-	}
-
-	if col, ok := cmp.left.(*LogicalColumn); ok {
-		if val, ok := cmp.right.(*ConstantValueExpr); ok {
-			if col.origin.alias == tableAlias {
-				return col, val.val, cmp.compType, true
+	switch cmp := expr.(type) {
+	case *ComparisonExpression:
+		if col, ok := cmp.left.(*LogicalColumn); ok {
+			if val, ok := cmp.right.(*ConstantValueExpr); ok {
+				if col.origin.alias == tableAlias {
+					return col, val.val, cmp.compType, true
+				}
 			}
 		}
-	}
-
-	if col, ok := cmp.right.(*LogicalColumn); ok {
-		if val, ok := cmp.left.(*ConstantValueExpr); ok {
-			if col.origin.alias == tableAlias {
-				flippedOp := flipComparison(cmp.compType)
-				return col, val.val, flippedOp, true
+		if col, ok := cmp.right.(*LogicalColumn); ok {
+			if val, ok := cmp.left.(*ConstantValueExpr); ok {
+				if col.origin.alias == tableAlias {
+					flippedOp := flipComparison(cmp.compType)
+					return col, val.val, flippedOp, true
+				}
 			}
+		}
+	case *NegationExpression:
+		if col, val, op, ok := isRangeScan(cmp.child, tableAlias); ok {
+			flippedOp := flipComparison(op)
+			return col, val, flippedOp, true
 		}
 	}
 
@@ -102,6 +120,94 @@ func flipComparison(op ComparisonType) ComparisonType {
 	return op // Equal / NotEqual stay the same
 }
 
+func toDNFTerms(expr Expr) [][]Expr {
+	if expr == nil {
+		return nil
+	}
+	switch e := expr.(type) {
+	case *BinaryLogicExpression:
+		switch e.logicType {
+		case Or:
+			left := toDNFTerms(e.left)
+			right := toDNFTerms(e.right)
+			return append(left, right...)
+		case And:
+			left := toDNFTerms(e.left)
+			right := toDNFTerms(e.right)
+			if len(left) == 0 {
+				return right
+			}
+			if len(right) == 0 {
+				return left
+			}
+			terms := make([][]Expr, 0, len(left)*len(right))
+			for _, l := range left {
+				for _, r := range right {
+					term := make([]Expr, 0, len(l)+len(r))
+					term = append(term, l...)
+					term = append(term, r...)
+					terms = append(terms, term)
+				}
+			}
+			return terms
+		}
+	case *NegationExpression:
+		return negateToDNF(e.child)
+	case *ComparisonExpression, *NullCheckExpression, *LikeExpression:
+		return [][]Expr{{e}}
+	default:
+		panic(fmt.Sprintf("Unsupported expression type in toDNFTerms: %T", e))
+	}
+
+	return [][]Expr{{expr}}
+}
+
+func negateToDNF(expr Expr) [][]Expr {
+	if expr == nil {
+		return nil
+	}
+	switch e := expr.(type) {
+	case *NegationExpression:
+		return toDNFTerms(e.child)
+	case *BinaryLogicExpression:
+		switch e.logicType {
+		case And:
+			left := negateToDNF(e.left)
+			right := negateToDNF(e.right)
+			return append(left, right...)
+		case Or:
+			left := negateToDNF(e.left)
+			right := negateToDNF(e.right)
+			if len(left) == 0 {
+				return right
+			}
+			if len(right) == 0 {
+				return left
+			}
+			terms := make([][]Expr, 0, len(left)*len(right))
+			for _, l := range left {
+				for _, r := range right {
+					term := make([]Expr, 0, len(l)+len(r))
+					term = append(term, l...)
+					term = append(term, r...)
+					terms = append(terms, term)
+				}
+			}
+			return terms
+		}
+	case *ComparisonExpression, *NullCheckExpression, *LikeExpression:
+		return [][]Expr{{&NegationExpression{child: e}}}
+	}
+	return [][]Expr{{&NegationExpression{child: expr}}}
+}
+
+func predicatesToDNFTerms(predicates []Expr) [][]Expr {
+	if len(predicates) == 0 {
+		return nil
+	}
+	return toDNFTerms(MergePredicates(predicates))
+}
+
 // IndexMatchResult describes how well an index matches the scan predicates
 type IndexMatchResult struct {
 	NumMatchedColumns int
@@ -111,11 +217,47 @@ type IndexMatchResult struct {
 	MatchedPreds      []Expr
 }
 
-// analyzeIndex checks if the given index can be used to satisfy the scan predicates.
-// Matches columns from left to right without gaps.
-// TODO: Normalize predicates. E.g. We don't want predicates like col = 5 AND col > 3 to prevent
-// confusion in index matching.
+/*
+analyzeIndex checks if the given index can be used to satisfy the scan predicates.
+Matches columns from left to right without gaps.
+The predicates are logical expressions.
+TODO: Normalize predicates. E.g. We don't want predicates like col = 5 AND col > 3 to prevent
+confusion in index matching.
+*/
 func analyzeIndex(idx *catalog.Index, predicates []Expr, tableAlias string) *IndexMatchResult {
+	terms := predicatesToDNFTerms(predicates)
+	if len(terms) == 0 {
+		return &IndexMatchResult{Values: make([]common.Value, 0), MatchedPreds: make([]Expr, 0)}
+	}
+	// For DNF with OR, pick the best single conjunctive term to drive the index.
+	var best *IndexMatchResult
+	for _, term := range terms {
+		match := analyzeIndexTerm(idx, term, tableAlias)
+		if best == nil || match.NumMatchedColumns > best.NumMatchedColumns {
+			best = match
+		}
+	}
+	if best == nil {
+		return &IndexMatchResult{Values: make([]common.Value, 0), MatchedPreds: make([]Expr, 0)}
+	}
+	return best
+}
+
+/*
+Every predicate in []Expr should be a simple logical expression:
+- ComparisonExpression for equality or range scans (e.g., col = 5, col > 3)
+- LikeExpression for pattern matching (e.g., col LIKE 'abc%')
+- NullCheckExpression for IS NULL / IS NOT NULL (e.g., col IS NULL)
+
+For b-tree indexes, we can see if the predicates can match the index columns in order.
+For example, if the index is on (a, b, c), we first look for predicates on 'a',
+then 'b', then 'c'. If we find a gap (e.g., no predicate on 'b' but there's one
+on 'c'), we stop and only consider the matched columns up to that point. For now,
+since partial matching is not supported yet, we require all ketys to be matched.
+
+For hash indexes, we only look for equality predicates that match all index columns.
+*/
+func analyzeIndexTerm(idx *catalog.Index, predicates []Expr, tableAlias string) *IndexMatchResult {
 	result := &IndexMatchResult{
 		Values:       make([]common.Value, 0),
 		MatchedPreds: make([]Expr, 0),
@@ -159,6 +301,16 @@ func analyzeIndex(idx *catalog.Index, predicates []Expr, tableAlias string) *Ind
 		break
 	}
 
+	// TODO: enable this when partial index matches are supported.
+	// if idx.Type == "hash" && result.NumMatchedColumns != len(idx.KeySchema) {
+	// For hash indexes, we require equality predicates on all index columns.
+	if result.NumMatchedColumns < len(idx.KeySchema) {
+		return &IndexMatchResult{
+			Values:       make([]common.Value, 0),
+			MatchedPreds: make([]Expr, 0),
+		}
+	}
+
 	return result
 }
 
@@ -176,6 +328,60 @@ func makeMultiColumnKey(values []common.Value, types []common.Type) (indexing.Ke
 		desc.SetValue(buf, i, val)
 	}
 	return indexing.NewKey(buf, desc), nil
+}
+
+func applyIndexResidualsAndProjection(physicalNode PlanNode, scanNode *LogicalScanNode, match *IndexMatchResult, c *catalog.Catalog, exprBinder *ExpressionBinder) (PlanNode, error) {
+	// Conditions that were not used by the Index Scan are implemented by a filter
+	usedSet := make(map[Expr]bool)
+	for _, expr := range match.MatchedPreds {
+		usedSet[expr] = true
+	}
+
+	dnfPredicates := predicatesToDNFTerms(scanNode.Predicates)
+	newDnfPredicates := make([][]Expr, 0, len(dnfPredicates))
+
+	// If one DNF term is fully satisfied by the index (i.e., no residuals),
+	// the entire DNF is satisfied, so no filter is needed.
+	var hasFullyMatchedTerm bool
+	for _, term := range dnfPredicates {
+		var residuals []Expr
+		for _, pred := range term {
+			if !usedSet[pred] {
+				residuals = append(residuals, pred)
+			}
+		}
+		if len(residuals) == 0 {
+			// This term is fully matched by the index, so the entire OR is satisfied
+			hasFullyMatchedTerm = true
+			break
+		}
+		newDnfPredicates = append(newDnfPredicates, residuals)
+	}
+
+	// If one complete DNF term was satisfied by the index, no filter needed at all
+	var residuals []Expr
+	if !hasFullyMatchedTerm {
+		// Merge residual DNF predicates back into a single expression tree for the filter node.
+		// Convert each residual term (conjunction) into an OR of conjunctions.
+		for _, term := range newDnfPredicates {
+			residuals = append(residuals, MergePredicates(term))
+		}
+	}
+
+	if scanNode.projection != nil {
+		var plan PlanNode = physicalNode
+		if len(residuals) > 0 {
+			plan = wrapInFilter(plan, residuals, scanNode.RawOutputSchema(), exprBinder)
+		}
+		projectionRule := &ProjectionRule{}
+		projNode, _ := projectionRule.Apply(scanNode.projection, []PlanNode{plan}, c, exprBinder)
+		return projNode, nil
+	}
+
+	if len(residuals) > 0 {
+		return wrapInFilter(physicalNode, residuals, scanNode.RawOutputSchema(), exprBinder), nil
+	}
+	return physicalNode, nil
 }
 
 type IndexScanRule struct{}
@@ -197,7 +403,7 @@ func (r *IndexScanRule) Match(node LogicalPlanNode, children []PlanNode, c *cata
 
 	for _, idx := range table.Indexes {
 		match := analyzeIndex(&idx, scan.Predicates, scan.GetTableAlias())
-		if match.NumMatchedColumns > 0 && match.IsRange {
+		if match.NumMatchedColumns == len(idx.KeySchema) && match.IsRange {
 			return true
 		}
 	}
@@ -205,15 +411,15 @@ func (r *IndexScanRule) Match(node LogicalPlanNode, children []PlanNode, c *cata
 }
 
 func (r *IndexScanRule) Apply(node LogicalPlanNode, children []PlanNode, c *catalog.Catalog, exprBinder *ExpressionBinder) (PlanNode, error) {
-	scan := node.(*LogicalScanNode)
-	table, _ := c.GetTableByOid(scan.GetTableOid())
+	scanNode := node.(*LogicalScanNode)
+	table, _ := c.GetTableByOid(scanNode.GetTableOid())
 
 	var bestIdx *catalog.Index
 	var bestMatch *IndexMatchResult
 
 	for _, idx := range table.Indexes {
 		currentIdx := idx
-		match := analyzeIndex(&currentIdx, scan.Predicates, scan.GetTableAlias())
+		match := analyzeIndex(&currentIdx, scanNode.Predicates, scanNode.GetTableAlias())
 
 		if match.NumMatchedColumns > 0 && match.IsRange {
 			if bestMatch == nil || match.NumMatchedColumns > bestMatch.NumMatchedColumns {
@@ -232,6 +438,17 @@ func (r *IndexScanRule) Apply(node LogicalPlanNode, children []PlanNode, c *cata
 	if op == LessThan || op == LessThanOrEqual {
 		direction = indexing.ScanDirectionBackward
 	}
+	if op == LessThan {
+		// For exclusive range, we need to adjust the key to be the predecessor of the given value.
+		lastVal := bestMatch.Values[len(bestMatch.Values)-1]
+		adjustedVal := lastVal.Decrement()
+		bestMatch.Values[len(bestMatch.Values)-1] = adjustedVal
+	} else if op == GreaterThan {
+		// For exclusive range, we need to adjust the key to be the successor of the given value.
+		lastVal := bestMatch.Values[len(bestMatch.Values)-1]
+		adjustedVal := lastVal.Increment()
+		bestMatch.Values[len(bestMatch.Values)-1] = adjustedVal
+	}
 
 	keyTypes := make([]common.Type, bestMatch.NumMatchedColumns)
 	for i := 0; i < bestMatch.NumMatchedColumns; i++ {
@@ -248,22 +465,16 @@ func (r *IndexScanRule) Apply(node LogicalPlanNode, children []PlanNode, c *cata
 		return nil, err
 	}
 
-	var plan PlanNode = NewIndexScanNode(
+	physicalNode := NewIndexScanNode(
 		bestIdx.Oid,
-		scan.GetTableOid(),
+		scanNode.GetTableOid(),
 		tableSchemaToTypes(table),
 		direction,
 		key,
-		scan.ForUpdate,
+		scanNode.ForUpdate,
 	)
 
-	// Wrap in filter for any residual predicates.
-	// TODO: exclude bestMatch.MatchedPreds from the filter
-	if len(scan.Predicates) > 0 {
-		plan = wrapInFilter(plan, scan.Predicates, scan.OutputSchema(), exprBinder)
-	}
-
-	return plan, nil
+	return applyIndexResidualsAndProjection(physicalNode, scanNode, bestMatch, c, exprBinder)
 }
 
 type IndexLookupRule struct{}
@@ -298,15 +509,15 @@ func (r *IndexLookupRule) Priority() int {
 }
 
 func (r *IndexLookupRule) Apply(node LogicalPlanNode, children []PlanNode, c *catalog.Catalog, exprBinder *ExpressionBinder) (PlanNode, error) {
-	scan := node.(*LogicalScanNode)
-	table, _ := c.GetTableByOid(scan.GetTableOid())
+	scanNode := node.(*LogicalScanNode)
+	table, _ := c.GetTableByOid(scanNode.GetTableOid())
 
 	var bestIdx *catalog.Index
 	var bestMatch *IndexMatchResult
 
 	for _, idx := range table.Indexes {
 		currentIdx := idx
-		match := analyzeIndex(&currentIdx, scan.Predicates, scan.GetTableAlias())
+		match := analyzeIndex(&currentIdx, scanNode.Predicates, scanNode.GetTableAlias())
 
 		if match.NumMatchedColumns > 0 && !match.IsRange {
 			if bestMatch == nil || match.NumMatchedColumns > bestMatch.NumMatchedColumns {
@@ -336,19 +547,13 @@ func (r *IndexLookupRule) Apply(node LogicalPlanNode, children []PlanNode, c *ca
 		return nil, err
 	}
 
-	var plan PlanNode = NewIndexLookupNode(
+	physicalNode := NewIndexLookupNode(
 		bestIdx.Oid,
-		scan.GetTableOid(),
+		scanNode.GetTableOid(),
 		tableSchemaToTypes(table),
 		key,
-		scan.ForUpdate,
+		scanNode.ForUpdate,
 	)
 
-	// Wrap in filter for any residual predicates.
-	// TODO: exclude bestMatch.MatchedPreds from the filter
-	if len(scan.Predicates) > 0 {
-		plan = wrapInFilter(plan, scan.Predicates, scan.OutputSchema(), exprBinder)
-	}
-
-	return plan, nil
+	return applyIndexResidualsAndProjection(physicalNode, scanNode, bestMatch, c, exprBinder)
 }

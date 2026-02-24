@@ -262,6 +262,36 @@ func (v Value) StringValue() string {
 	return v.underlyingString
 }
 
+// Increment returns the strict next Value in type-specific ordering.
+// It panics if the Value is NULL or cannot be incremented.
+func (v Value) Increment() Value {
+	Assert(!v.null, "incrementing NULL value")
+	switch v.t {
+	case IntType:
+		Assert(v.underlyingInt < math.MaxInt64, "int overflow in Increment")
+		return NewIntValue(v.underlyingInt + 1)
+	case StringType:
+		return NewStringValue(nextLexString(v.underlyingString))
+	default:
+		panic("unknown type")
+	}
+}
+
+// Decrement returns the strict previous Value in type-specific ordering.
+// It panics if the Value is NULL or cannot be decremented.
+func (v Value) Decrement() Value {
+	Assert(!v.null, "decrementing NULL value")
+	switch v.t {
+	case IntType:
+		Assert(v.underlyingInt > math.MinInt64, "int underflow in Decrement")
+		return NewIntValue(v.underlyingInt - 1)
+	case StringType:
+		return NewStringValue(prevLexString(v.underlyingString))
+	default:
+		panic("unknown type")
+	}
+}
+
 // SizeInBytes returns the serialization size (fixed width).
 func (v Value) SizeInBytes() int {
 	return v.t.Size()
@@ -344,4 +374,48 @@ func (v Value) String() string {
 		return "NULL(int)"
 	}
 	return fmt.Sprintf("%d", v.IntValue())
+}
+
+// nextLexString returns the immediate successor in lexicographic order
+// over strings with lengths in [0, StringLength].
+func nextLexString(s string) string {
+	b := []byte(s)
+	Assert(len(b) <= StringLength, "string too long")
+
+	if len(b) < StringLength {
+		return string(append(b, 0x00))
+	}
+
+	// len == StringLength: increment with carry from the end
+	for i := len(b) - 1; i >= 0; i-- {
+		if b[i] != 0xFF {
+			b[i]++
+			for j := i + 1; j < len(b); j++ {
+				b[j] = 0x00
+			}
+			return string(b)
+		}
+	}
+
+	panic("string overflow in Increment")
+}
+
+// prevLexString returns the immediate predecessor in lexicographic order
+// over strings with lengths in [0, StringLength].
+func prevLexString(s string) string {
+	b := []byte(s)
+	Assert(len(b) <= StringLength, "string too long")
+	Assert(len(b) > 0, "string underflow in Decrement")
+
+	// If the last byte is 0x00, the immediate predecessor is the shorter prefix.
+	if b[len(b)-1] == 0x00 {
+		return string(b[:len(b)-1])
+	}
+
+	// Decrement last byte and maximize the suffix to get the largest smaller string.
+	b[len(b)-1]--
+	for len(b) < StringLength {
+		b = append(b, 0xFF)
+	}
+	return string(b)
 }

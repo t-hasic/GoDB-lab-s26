@@ -18,6 +18,7 @@ import (
 	"mit.edu/dsg/godb/execution"
 	"mit.edu/dsg/godb/indexing"
 	"mit.edu/dsg/godb/planner"
+	"mit.edu/dsg/godb/recovery"
 	"mit.edu/dsg/godb/storage"
 	"mit.edu/dsg/godb/transaction"
 )
@@ -56,16 +57,19 @@ func NewGoDB(catalog *catalog.Catalog, storageDir, logDir string, bufferPoolSize
 		return nil, err
 	}
 	indexManager, err := indexing.NewIndexManager(catalog)
+	if err != nil {
+		return nil, err
+	}
 
-	// TODO: Activate actual recovery manager once recovery is implemented in lab 4
-	//recoveryManager := &recovery.NoopRecoveryManager{}
-	//if err := recoveryManager.Recover(); err != nil {
-	//	return nil, err
-	//}
+	// TODO: Use an actual recovery manager once recovery is implemented in lab 4
+	recoveryManager := recovery.NewNoLogRecoveryManager(bufferPool, txnManager, catalog, tableManager, indexManager)
+	if err := recoveryManager.Recover(); err != nil {
+		return nil, err
+	}
 
 	logicalRules := []planner.LogicalRule{
 		&planner.PredicatePushDownRule{},
-		&planner.ProjectionPushDownRule{},
+		//&planner.ProjectionPushDownRule{},
 	}
 	// TODO: Activate rules as you implement the relevant executors in Lab 2
 	physicalRules := []planner.PhysicalConversionRule{
@@ -368,7 +372,7 @@ func runShell(args []string) {
 }
 
 func executeStatement(db *GoDB, sql string, silent bool, explain bool) error {
-	plan, err := db.Planner.Plan(sql)
+	plan, err := db.Planner.Plan(sql, (!explain) || silent)
 	if err != nil {
 		return err
 	}
@@ -393,6 +397,14 @@ func executeStatement(db *GoDB, sql string, silent bool, explain bool) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	count := 0
 	start := time.Now()
+	if !silent {
+		if proj, ok := plan.(*planner.ProjectionNode); ok {
+			headers := projectionHeaders(proj)
+			if len(headers) > 0 {
+				fmt.Fprintln(w, strings.Join(headers, "\t"))
+			}
+		}
+	}
 
 	for executor.Next() {
 		tuple := executor.Current()
@@ -420,4 +432,20 @@ func executeStatement(db *GoDB, sql string, silent bool, explain bool) error {
 		}
 	}
 	return nil
+}
+
+func projectionHeaders(proj *planner.ProjectionNode) []string {
+	headers := make([]string, len(proj.Expressions))
+	for i, expr := range proj.Expressions {
+		switch v := expr.(type) {
+		case interface{ Name() string }:
+			name := v.Name()
+			if name != "" {
+				headers[i] = name
+				continue
+			}
+		}
+		headers[i] = expr.String()
+	}
+	return headers
 }

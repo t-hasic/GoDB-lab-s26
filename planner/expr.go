@@ -51,6 +51,10 @@ func (e *BoundValueExpr) OutputType() common.Type {
 }
 
 func (e *BoundValueExpr) String() string {
+	return fmt.Sprintf("{%s: offset %d type %s}", e.name, e.fieldOffset, e.outputType)
+}
+
+func (e *BoundValueExpr) Name() string {
 	return e.name
 }
 

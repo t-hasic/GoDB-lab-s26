@@ -1,6 +1,9 @@
 package planner
 
 import (
+	"fmt"
+	"strings"
+
 	"mit.edu/dsg/godb/common"
 )
 
@@ -31,5 +34,9 @@ func (n *ProjectionNode) Children() []PlanNode {
 }
 
 func (n *ProjectionNode) String() string {
-	return "Projection"
+	var exprs []string
+	for _, e := range n.Expressions {
+		exprs = append(exprs, fmt.Sprintf("%s |", e.String()))
+	}
+	return fmt.Sprintf("Projection: %s", strings.Join(exprs, ", "))
 }
