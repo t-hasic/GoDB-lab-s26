@@ -59,6 +59,13 @@ func (tableHeap *TableHeap) StorageSchema() *storage.RawTupleDesc {
 
 // InsertTuple inserts a tuple into the TableHeap. It should find a free space, allocating if needed, and return the found slot.
 func (tableHeap *TableHeap) InsertTuple(txn *transaction.TransactionContext, row storage.RawTuple) (common.RecordID, error) {
+	if txn != nil {
+		err := txn.AcquireLock(transaction.NewTableLockTag(tableHeap.oid), transaction.LockModeIX)
+		if err != nil {
+			return common.RecordID{}, err
+		}
+	}
+
 	// Get the last page
 	if tableHeap.numPages == 0 {
 		dbFile, err := tableHeap.bufferPool.StorageManager().GetDBFile(tableHeap.oid)
@@ -84,6 +91,15 @@ func (tableHeap *TableHeap) InsertTuple(txn *transaction.TransactionContext, row
 	slotNumber := heapPage.FindFreeSlot()
 	if slotNumber == -1 {
 		// No free slot, need to allocate a new page
+		tableHeap.bufferPool.UnpinPage(page, false)  // release the full page first
+		dbFile, err := tableHeap.bufferPool.StorageManager().GetDBFile(tableHeap.oid)
+		if err != nil {
+			return common.RecordID{}, fmt.Errorf("failed to get db file: %w", err)
+		}
+		_, err = dbFile.AllocatePage(1)
+		if err != nil {
+			return common.RecordID{}, fmt.Errorf("failed to allocate page: %w", err)
+		}
 		pageID = common.PageID{Oid: tableHeap.oid, PageNum: int32(tableHeap.numPages)}
 		page, err = tableHeap.bufferPool.GetPage(pageID)
 		if err != nil {
@@ -101,9 +117,26 @@ func (tableHeap *TableHeap) InsertTuple(txn *transaction.TransactionContext, row
 		Slot:   int32(slotNumber),
 	}
 
+	if txn != nil {
+		if err := txn.AcquireLock(transaction.NewTupleLockTag(rid), transaction.LockModeX); err != nil {
+			tableHeap.bufferPool.UnpinPage(page, false)
+			return common.RecordID{}, err
+		}
+	}
+
 	dest := heapPage.AccessTuple(rid)
 	copy(dest, row)
 	heapPage.MarkAllocated(rid, true)
+
+	if txn != nil {
+		record := txn.NewInsertRecord(rid, row)
+		lsn, err := tableHeap.logManager.Append(record)
+		if err != nil {
+			tableHeap.bufferPool.UnpinPage(page, false)
+			return common.RecordID{}, fmt.Errorf("failed to append log record: %w", err)
+		}
+		page.MonotonicallyUpdateLSN(lsn)
+	}
 
 	tableHeap.bufferPool.UnpinPage(page, true)
 
@@ -122,15 +155,35 @@ func (tableHeap *TableHeap) getRecordPage(rid common.RecordID) (*storage.PageFra
 
 // DeleteTuple marks a tuple as deleted in the TableHeap. If the tuple has been deleted, return ErrTupleDeleted
 func (tableHeap *TableHeap) DeleteTuple(txn *transaction.TransactionContext, rid common.RecordID) error {
+	if txn != nil {
+		if err := txn.AcquireLock(transaction.NewTableLockTag(tableHeap.oid), transaction.LockModeIX); err != nil {
+			return err
+		}
+		if err := txn.AcquireLock(transaction.NewTupleLockTag(rid), transaction.LockModeX); err != nil {
+			return err
+		}
+	}
 	page, err := tableHeap.getRecordPage(rid)
     if err != nil {
         return err
     }
 	heapPage := page.AsHeapPage()
 	if heapPage.IsDeleted(rid) {
+		tableHeap.bufferPool.UnpinPage(page, true)
 		return ErrTupleDeleted
 	}
 	heapPage.MarkDeleted(rid, true)
+
+	if txn != nil {
+		record := txn.NewDeleteRecord(rid)
+		lsn, err := tableHeap.logManager.Append(record)
+		if err != nil {
+			tableHeap.bufferPool.UnpinPage(page, true)
+			return fmt.Errorf("failed to append log record: %w", err)
+		}
+		page.MonotonicallyUpdateLSN(lsn)
+	}
+
 	tableHeap.bufferPool.UnpinPage(page, true)
 	return nil
 }
@@ -138,13 +191,30 @@ func (tableHeap *TableHeap) DeleteTuple(txn *transaction.TransactionContext, rid
 // ReadTuple reads the physical bytes of a tuple into the provided buffer. If forUpdate is true, read should acquire
 // exclusive lock instead of shared. If the tuple has been deleted, return ErrTupleDeleted
 func (tableHeap *TableHeap) ReadTuple(txn *transaction.TransactionContext, rid common.RecordID, buffer []byte, forUpdate bool) error {
-	// TODO: ignored the exclusive locking part
+	if txn != nil {
+		if forUpdate {
+			if err := txn.AcquireLock(transaction.NewTableLockTag(tableHeap.oid), transaction.LockModeIX); err != nil {
+				return err
+			}
+			if err := txn.AcquireLock(transaction.NewTupleLockTag(rid), transaction.LockModeX); err != nil {
+				return err
+			}
+		} else {
+			if err := txn.AcquireLock(transaction.NewTableLockTag(tableHeap.oid), transaction.LockModeIS); err != nil {
+				return err
+			}
+			if err := txn.AcquireLock(transaction.NewTupleLockTag(rid), transaction.LockModeS); err != nil {
+				return err
+			}
+		}
+	}
 	page, err := tableHeap.getRecordPage(rid)
     if err != nil {
         return err
     }
 	heapPage := page.AsHeapPage()
 	if heapPage.IsDeleted(rid) {
+		tableHeap.bufferPool.UnpinPage(page, false)
 		return ErrTupleDeleted
 	}
 
@@ -159,17 +229,43 @@ func (tableHeap *TableHeap) ReadTuple(txn *transaction.TransactionContext, rid c
 
 // UpdateTuple updates a tuple in-place with new binary data. If the tuple has been deleted, return ErrTupleDeleted.
 func (tableHeap *TableHeap) UpdateTuple(txn *transaction.TransactionContext, rid common.RecordID, updatedTuple storage.RawTuple) error {
+	if txn != nil {
+		if err := txn.AcquireLock(transaction.NewTableLockTag(tableHeap.oid), transaction.LockModeIX); err != nil {
+			return err
+		}
+		if err := txn.AcquireLock(transaction.NewTupleLockTag(rid), transaction.LockModeX); err != nil {
+			return err
+		}
+	}
 	page, err := tableHeap.getRecordPage(rid)
-    if err != nil {
-        return err
-    }
+	if err != nil {
+		return err
+	}
 
 	page.PageLatch.Lock()
 	heapPage := page.AsHeapPage()
 	if heapPage.IsDeleted(rid) {
+		page.PageLatch.Unlock()
+		tableHeap.bufferPool.UnpinPage(page, true)
 		return ErrTupleDeleted
 	}
+
+	// copy original tuple first, before overwriting
 	dest := heapPage.AccessTuple(rid)
+	beforeImage := make([]byte, len(dest))
+	copy(beforeImage, dest)
+
+	if txn != nil {
+		record := txn.NewUpdateRecord(rid, beforeImage, updatedTuple)
+		lsn, err := tableHeap.logManager.Append(record)
+		if err != nil {
+			page.PageLatch.Unlock()
+			tableHeap.bufferPool.UnpinPage(page, true)
+			return fmt.Errorf("failed to append log record: %w", err)
+		}
+		page.MonotonicallyUpdateLSN(lsn)
+	}
+
 	copy(dest, updatedTuple)
 	page.PageLatch.Unlock()
 
@@ -189,8 +285,10 @@ func (tableHeap *TableHeap) VacuumPage(pageID common.PageID) error {
 	for i := 0; i < heapPage.NumSlots(); i++ {
 		rid := common.RecordID{ PageID: pageID, Slot: int32(i) }
 		if heapPage.IsDeleted(rid) {
-			heapPage.MarkAllocated(rid, false)
-			// TODO: check if lock is held by any transaction
+			tag := transaction.NewTupleLockTag(rid)
+			if !tableHeap.lockManager.LockHeld(tag) {
+				heapPage.MarkAllocated(rid, false)
+		    }
 		}
 	}
 	tableHeap.bufferPool.UnpinPage(page, true)
@@ -232,6 +330,12 @@ func (it *TableHeapIterator) IsNil() bool {
 func (it *TableHeapIterator) Next() bool {
 	for ; it.currentPageNum < it.tableHeap.numPages; {
 		// TODO: check if page is allocation map page
+		if it.txn != nil {
+			if err := it.txn.AcquireLock(transaction.NewTableLockTag(it.tableHeap.oid), it.mode); err != nil {
+				it.currentError = err
+				return false
+			}
+		}
 		if it.currentPage != nil {
 			it.tableHeap.bufferPool.UnpinPage(it.currentPage, false)
 		}

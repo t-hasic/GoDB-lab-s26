@@ -16,39 +16,56 @@ type logRecordBuffer struct {
 	offsets []int
 }
 
+const preAllocation = 5 // TODO: figure out what this should be
+
 // newLogRecordBuffer creates a stack with some pre-allocated capacity.
 func newLogRecordBuffer() *logRecordBuffer {
-	panic("unimplemented")
+	return &logRecordBuffer{
+		buffer: make([]byte, 0, preAllocation),
+
+	}
 }
 
 // allocate reserves `totalSize` bytes in the buffer for a new record.
 // It returns a slice referencing the allocated space.
 // It also records the offset of this new record, effectively pushing it onto the stack.
 func (s *logRecordBuffer) allocate(totalSize int) []byte {
-	panic("unimplemented")
+	offset := len(s.buffer)
+	s.offsets = append(s.offsets, offset)
+	s.buffer = append(s.buffer, make([]byte, totalSize)...)
+	return s.buffer[offset : offset+totalSize]
 }
 
 // len returns the number of records currently stored in the buffer.
 func (s *logRecordBuffer) len() int {
-	panic("unimplemented")
+	return len(s.offsets)
 }
 
 // get returns the LogRecord at the specified index `i`.
 // The index `i` corresponds to the order of insertion (0 is the first record).
 func (s *logRecordBuffer) get(i int) storage.LogRecord {
-	panic("unimplemented")
+	var data []byte
+	if i == s.len() - 1 {
+		data = s.buffer[s.offsets[i]:]
+	} else {
+		data = s.buffer[s.offsets[i]:s.offsets[i+1]]
+	}
+	return storage.AsLogRecord(data)
 }
 
 // pop removes the most recently added record from the buffer.
 // This effectively rewinds the stack by one record.
 func (s *logRecordBuffer) pop() {
-	panic("unimplemented")
+	lastOffset := s.offsets[len(s.offsets)-1]
+	s.offsets = s.offsets[:len(s.offsets)-1]
+	s.buffer = s.buffer[:lastOffset]
 }
 
 // reset clears the buffer (sets length to 0) without releasing the underlying memory.
 // This is used when reusing the TransactionContext.
 func (s *logRecordBuffer) reset() {
-	panic("unimplemented")
+	s.buffer = s.buffer[:0]
+	s.offsets = s.offsets[:0]
 }
 
 // TransactionContext holds the runtime state of a single transaction.
@@ -86,25 +103,52 @@ func (txn *TransactionContext) AddCommitTask(task IndexTask) {
 // held).  If the lock cannot be acquired immediately, this call may block or fail due
 // to a deadlock.
 func (txn *TransactionContext) AcquireLock(tag DBLockTag, mode DBLockMode) error {
-	panic("unimplemented")
+	held, exists := txn.heldLocks[tag]
+	if exists {
+		merged := mergeMode[held][mode]
+		if merged == held {
+			return nil // already covered
+		}
+		lockErr := txn.lm.Lock(txn.id, tag, mode)
+		if lockErr != nil {
+			return lockErr
+		}
+		txn.heldLocks[tag] = merged
+		return nil
+	}
+	lockErr := txn.lm.Lock(txn.id, tag, mode)
+	if lockErr != nil {
+		return lockErr
+	}
+	txn.heldLocks[tag] = mode
+	return nil
 }
 
 // HeldLock returns the lock mode this transaction currently holds on the specified resource,
 // along with a boolean indicating whether any lock is held.
 func (txn *TransactionContext) HeldLock(tag DBLockTag) (DBLockMode, bool) {
-	panic("unimplemented")
+	mode, isHeld := txn.heldLocks[tag]
+	return mode, isHeld
 }
 
 // ReleaseAllLocks releases all locks held by this transaction.
 // This is typically called during the Commit or Abort phase of the transaction lifecycle.
 func (txn *TransactionContext) ReleaseAllLocks() {
-	panic("unimplemented")
+	for tag, _ := range txn.heldLocks {
+		txn.lm.Unlock(txn.id, tag)
+	}
 }
 
 // Reset clears the transaction context for reuse.
 // This is critical when using sync.Pool to avoid leaking data between users.
 func (txn *TransactionContext) Reset(id common.TransactionID) {
-	panic("unimplemented")
+	txn.id = id
+	txn.logRecords.reset()
+	for tag, _ := range txn.heldLocks {
+		delete(txn.heldLocks, tag)
+	}
+	txn.abortActions = txn.abortActions[:0]
+	txn.commitActions = txn.commitActions[:0]
 }
 
 // NewTestTransactionContext creates a TransactionContext for use in tests that need

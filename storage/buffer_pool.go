@@ -2,7 +2,7 @@ package storage
 
 import (
 	"mit.edu/dsg/godb/common"
-	"github.com/puzpuzpuz/xsync/v4"
+	"github.com/puzpuzpuz/xsync/v3"
 	"sync"
 	"fmt"
 	"log"
@@ -94,6 +94,7 @@ func (bp *BufferPool) GetPage(pageID common.PageID) (*PageFrame, error) {
 
 		// write back victim to disk if dirty
 		if wasDirty && wasValid {
+			bp.logManager.WaitUntilFlushed(victim.LSN())
 			dbFile, err := bp.storageManager.GetDBFile(oldPageID.Oid)
 			if err != nil {
 				log.Printf("failed to get db file for page %v: %v", oldPageID, err)
